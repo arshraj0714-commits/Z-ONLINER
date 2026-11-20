@@ -7,7 +7,7 @@ import asyncio
 import json
 import os
 import logging
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Optional, Dict, List
 
 import discord_self as discord
@@ -25,26 +25,23 @@ def parse_token_line(line: str) -> Optional[str]:
     """
     Parse a single line and extract the Discord token.
     Supports two formats:
-      - user:pass:token   →  extracts the 3rd colon-separated part
-      - token             →  uses the line as-is
+      - user:pass:token   ->  extracts the last colon-separated part
+      - token             ->  uses the line as-is
     Returns the token string, or None if the line is empty/invalid.
     """
     line = line.strip()
     if not line:
         return None
 
-    # If it contains colons and has exactly 3 parts → user:pass:token
     parts = line.split(":")
     if len(parts) >= 3:
-        # The token is everything after the second colon (in case token has colons)
-        # Re-join from index 2 onwards in case the token itself contains colons
-        token = ":".join(parts[2:])
-        token = token.strip()
+        # Discord tokens never contain colons, so the last segment is the token.
+        token = parts[-1].strip()
         if token:
             return token
 
-    # Otherwise treat the whole line as a plain token
-    # Basic sanity: Discord tokens are typically 50-120 chars
+    # Otherwise treat the whole line as a plain token.
+    # Basic sanity: Discord tokens are typically 50-120 chars.
     if len(line) >= 20:
         return line
 
@@ -77,7 +74,7 @@ def add_token(token: str, label: str = None) -> bool:
         return False
     tokens[token] = {
         "label": label or token[:12] + "...",
-        "added_at": datetime.utcnow().isoformat(),
+        "added_at": datetime.now(timezone.utc).isoformat(),
     }
     save_tokens(tokens)
     return True
@@ -97,9 +94,11 @@ class AccountClient(discord.Client):
     """A self-bot client that logs in as a user account to keep it online."""
 
     def __init__(self, token: str, loop: asyncio.AbstractEventLoop):
-        intents = discord.Intents.all()
-        super().__init__(intents=intents, loop=loop)
+        # IMPORTANT: discord.py-self (user accounts) does NOT support Intents.
+        # Intents are a bot-only concept; do not pass them here.
+        super().__init__()
         self._token = token
+        self._loop = loop
         self._status_task: Optional[asyncio.Task] = None
         self._current_status = "offline"
         self._target_status = "online"
@@ -147,7 +146,7 @@ class AccountClient(discord.Client):
         self._target_status = status_name.lower()
 
         if duration_minutes:
-            self._temp_status_until = datetime.utcnow() + timedelta(minutes=duration_minutes)
+            self._temp_status_until = datetime.now(timezone.utc) + timedelta(minutes=duration_minutes)
         else:
             self._temp_status_until = None
 
@@ -172,13 +171,13 @@ class AccountClient(discord.Client):
         self._is_ready = True
         logger.info(f"[{self.account_label}] Logged in successfully")
         await self.set_online()
-        self._status_task = self.loop.create_task(self._status_watcher())
+        self._status_task = self._loop.create_task(self._status_watcher())
 
     async def _status_watcher(self):
         """Watch for temporary status expiry and revert to online."""
         try:
             while self._keep_alive and not self.is_closed():
-                if self._temp_status_until and datetime.utcnow() >= self._temp_status_until:
+                if self._temp_status_until and datetime.now(timezone.utc) >= self._temp_status_until:
                     logger.info(f"[{self.account_label}] Temporary status expired, reverting to online")
                     await self.set_online()
                 await asyncio.sleep(5)
